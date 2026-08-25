@@ -2,6 +2,7 @@
 name = "e4-management"
 version = "0.1.0"
 edition = "2021"
+repository = "https://github.com/rodar-ascom/e4-management.git"
 
 [dependencies]
 askama = "0.14"
