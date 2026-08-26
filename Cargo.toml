@@ -2,11 +2,12 @@
 name = "e4-management"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.75"
 repository = "https://github.com/rodar-ascom/e4-management.git"
 
 [dependencies]
-askama = "0.14"
-axum = "0.8"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+askama = "=0.12.1"
+axum = "=0.7.9"
+tokio = { version = "=1.35.1", features = ["macros", "rt-multi-thread", "net"] }
+tracing = "=0.1.40"
+tracing-subscriber = { version = "=0.3.18", features = ["env-filter"] }
