@@ -87,7 +87,7 @@
         <div class="card" style="margin-top: 1.5rem; background: #f8fafc;">
             <div class="label">Persistent state path</div>
             <div style="margin-top: 0.75rem; display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center;">
-                <input id="state-path" type="text" value="/data/e4/boot-state.conf" style="flex: 1; min-width: 220px; padding: 0.8rem 0.9rem; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 1rem;" />
+                <input id="state-path" type="text" value="/var/lib/e4/boot-state.conf" style="flex: 1; min-width: 220px; padding: 0.8rem 0.9rem; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 1rem;" />
                 <button class="secondary" onclick="setStatePath()">Set path</button>
             </div>
         </div>
@@ -97,7 +97,7 @@
             <div style="margin-top: 0.75rem; line-height: 1.7; text-align: left;">
                 <strong>How to test the A/B boot flow:</strong>
                 <ol>
-                    <li>Set the persistent state path to a writable location such as <strong>/data/e4/boot-state.conf</strong>.</li>
+                    <li>Set the persistent state path to a writable location such as <strong>/var/lib/e4/boot-state.conf</strong>.</li>
                     <li>Click <strong>Update failed</strong> to simulate a failed image update. The state should become <strong>rollback-required</strong>.</li>
                     <li>Click <strong>Rollback</strong> to swap the active and candidate slots. The state should become <strong>rolled-back</strong>.</li>
                     <li>Use <strong>Refresh</strong> to reread the current state from the API.</li>

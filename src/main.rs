@@ -13,7 +13,7 @@ use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 use tracing::info;
 
-const DEFAULT_BOOT_STATE_PATH: &str = "/data/e4/boot-state.conf";
+const DEFAULT_BOOT_STATE_PATH: &str = "/var/lib/e4/boot-state.conf";
 const FALLBACK_BOOT_STATE_PATH: &str = "/tmp/e4/boot-state.conf";
 static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -244,7 +244,7 @@ fn failed_update_marks_rollback_required() {
 #[test]
 fn default_state_file_uses_persistent_data_path() {
     with_env_var(None, || {
-        assert_eq!(BootState::state_path(), "/data/e4/boot-state.conf");
+        assert_eq!(BootState::state_path(), "/var/lib/e4/boot-state.conf");
     });
 }
 
