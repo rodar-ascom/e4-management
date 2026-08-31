@@ -8,6 +8,7 @@ repository = "https://github.com/rodar-ascom/e4-management.git"
 [dependencies]
 askama = "=0.12.1"
 axum = "=0.7.9"
+serde = { version = "=1.0.229", features = ["derive"] }
 tokio = { version = "=1.35.1", features = ["macros", "rt-multi-thread", "net"] }
 tracing = "=0.1.40"
 tracing-subscriber = { version = "=0.3.18", features = ["env-filter"] }
