@@ -6,16 +6,145 @@
     <title>E4 management</title>
     <style>
         :root { color-scheme: light; font-family: sans-serif; }
-        body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #eef2f5; color: #18232d; }
-        main { padding: 2rem; text-align: center; }
-        h1 { margin: 0 0 0.5rem; font-size: 2rem; }
-        p { margin: 0; color: #52616d; }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            display: grid;
+            place-items: center;
+            background: #eef2f5;
+            color: #18232d;
+            font-family: Arial, sans-serif;
+        }
+        main {
+            width: min(760px, 90vw);
+            background: #ffffff;
+            border-radius: 16px;
+            box-shadow: 0 12px 32px rgba(24, 35, 45, 0.08);
+            padding: 2rem;
+        }
+        h1 { margin: 0 0 1rem; font-size: 2rem; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 1rem; margin: 1.5rem 0; }
+        .card {
+            background: #f8fafc;
+            border: 1px solid #dfe7ee;
+            border-radius: 10px;
+            padding: 1rem;
+        }
+        .label { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em; color: #60707f; }
+        .value { margin-top: 0.5rem; font-size: 1.2rem; font-weight: 700; }
+        .actions { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 1.5rem; }
+        button {
+            border: none;
+            border-radius: 8px;
+            padding: 0.8rem 1.15rem;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            color: white;
+            background: #1d4ed8;
+        }
+        button.secondary { background: #475569; }
+        button.warn { background: #b91c1c; }
+        button:hover { opacity: 0.95; }
+        pre {
+            margin-top: 1.25rem;
+            white-space: pre-wrap;
+            background: #0f172a;
+            color: #e2e8f0;
+            padding: 1rem;
+            border-radius: 10px;
+            overflow: auto;
+        }
     </style>
 </head>
 <body>
     <main>
-        <h1>{{ device_name }} is running.</h1>
-        <p>Server-side rendered by Rust.</p>
+        <h1>{{ device_name }} management</h1>
+
+        <div class="grid">
+            <div class="card">
+                <div class="label">State</div>
+                <div class="value" id="boot-state">{{ boot_state }}</div>
+            </div>
+            <div class="card">
+                <div class="label">Active slot</div>
+                <div class="value" id="active-slot">{{ active_slot }}</div>
+            </div>
+            <div class="card">
+                <div class="label">Candidate slot</div>
+                <div class="value" id="candidate-slot">{{ candidate_slot }}</div>
+            </div>
+            <div class="card">
+                <div class="label">Health</div>
+                <div class="value" id="health-ok">{{ health_ok }}</div>
+            </div>
+            <div class="card">
+                <div class="label">Last result</div>
+                <div class="value" id="last-result">{{ last_update_result }}</div>
+            </div>
+        </div>
+
+        <div class="actions">
+            <button onclick="postUpdate('success')">Update success</button>
+            <button class="secondary" onclick="postUpdate('failed')">Update failed</button>
+            <button class="warn" onclick="triggerRollback()">Rollback</button>
+            <button class="secondary" onclick="refreshState()">Refresh</button>
+        </div>
+
+        <pre id="debug-output">Boot state: {{ boot_state }}
+Active slot: {{ active_slot }}
+Candidate slot: {{ candidate_slot }}
+Last result: {{ last_update_result }}</pre>
     </main>
+
+    <script>
+        async function fetchJson(url, options = {}) {
+            const response = await fetch(url, options);
+            if (!response.ok) {
+                throw new Error('request failed: ' + response.status);
+            }
+            return response.json();
+        }
+
+        function renderState(state) {
+            document.getElementById('boot-state').textContent = state.boot_state;
+            document.getElementById('active-slot').textContent = state.active_slot;
+            document.getElementById('candidate-slot').textContent = state.candidate_slot;
+            document.getElementById('health-ok').textContent = state.health_ok ? 'healthy' : 'unhealthy';
+            document.getElementById('last-result').textContent = state.last_update_result;
+            document.getElementById('debug-output').textContent = JSON.stringify(state, null, 2);
+        }
+
+        async function refreshState() {
+            try {
+                const state = await fetchJson('/api/boot/status');
+                renderState(state);
+            } catch (err) {
+                document.getElementById('debug-output').textContent = 'Error: ' + err.message;
+            }
+        }
+
+        async function postUpdate(result) {
+            try {
+                const state = await fetchJson('/api/update/result', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ result })
+                });
+                renderState(state);
+            } catch (err) {
+                document.getElementById('debug-output').textContent = 'Error: ' + err.message;
+            }
+        }
+
+        async function triggerRollback() {
+            try {
+                const state = await fetchJson('/api/actions/rollback', { method: 'POST' });
+                renderState(state);
+            } catch (err) {
+                document.getElementById('debug-output').textContent = 'Error: ' + err.message;
+            }
+        }
+    </script>
 </body>
 </html>
