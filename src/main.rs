@@ -7,10 +7,12 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use std::{env, net::SocketAddr};
+use std::{env, fs, net::SocketAddr, path::PathBuf};
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 use tracing::info;
+
+const DEFAULT_BOOT_STATE_PATH: &str = "/run/e4/boot-state.conf";
 
 #[derive(Clone)]
 struct AppState {
@@ -60,8 +62,56 @@ impl Default for BootState {
 }
 
 impl BootState {
-    fn from_environment() -> Self {
+    fn state_path() -> String {
+        env::var("E4_BOOT_STATE_FILE").unwrap_or_else(|_| DEFAULT_BOOT_STATE_PATH.to_string())
+    }
+
+    fn from_persistent_file() -> Option<Self> {
+        let path = PathBuf::from(Self::state_path());
+        let contents = fs::read_to_string(path).ok()?;
         let mut state = Self::default();
+
+        for line in contents.lines() {
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            match key {
+                "E4_ACTIVE_SLOT" => state.active_slot = value.to_string(),
+                "E4_CANDIDATE_SLOT" => state.candidate_slot = value.to_string(),
+                "E4_BOOT_STATE" => state.boot_state = value.to_string(),
+                "E4_HEALTH_OK" => state.health_ok = matches!(value, "1" | "true" | "yes" | "ok"),
+                "E4_LAST_UPDATE_RESULT" => state.last_update_result = value.to_string(),
+                "E4_LAST_BOOT_TIME" => state.last_boot_time = value.to_string(),
+                "E4_PERSISTENT_DATA_PATH" => state.persistent_data_path = value.to_string(),
+                _ => {}
+            }
+        }
+
+        Some(state)
+    }
+
+    fn persist(&self) -> Result<(), std::io::Error> {
+        let path = PathBuf::from(Self::state_path());
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let content = format!(
+            "E4_ACTIVE_SLOT={}\nE4_CANDIDATE_SLOT={}\nE4_BOOT_STATE={}\nE4_HEALTH_OK={}\nE4_LAST_UPDATE_RESULT={}\nE4_LAST_BOOT_TIME={}\nE4_PERSISTENT_DATA_PATH={}\n",
+            self.active_slot,
+            self.candidate_slot,
+            self.boot_state,
+            if self.health_ok { "1" } else { "0" },
+            self.last_update_result,
+            self.last_boot_time,
+            self.persistent_data_path,
+        );
+
+        fs::write(path, content)
+    }
+
+    fn from_environment() -> Self {
+        let mut state = Self::from_persistent_file().unwrap_or_default();
         if let Ok(active) = env::var("E4_ACTIVE_SLOT") {
             state.active_slot = active;
         }
@@ -127,6 +177,31 @@ fn failed_update_marks_rollback_required() {
     assert_eq!(state.boot_state, "rollback-required");
 }
 
+#[test]
+fn persistent_state_round_trip_works() {
+    let dir = std::env::temp_dir().join(format!("e4-state-test-{}", std::process::id()));
+    let path = dir.join("boot-state.conf");
+    let old = std::env::var("E4_BOOT_STATE_FILE").ok();
+    std::env::set_var("E4_BOOT_STATE_FILE", &path);
+
+    let mut state = BootState::default();
+    state.boot_state = "rollback-required".to_string();
+    state.active_slot = "B".to_string();
+    state.candidate_slot = "A".to_string();
+    state.persist().unwrap();
+
+    let loaded = BootState::from_persistent_file().unwrap();
+    assert_eq!(loaded.active_slot, "B");
+    assert_eq!(loaded.candidate_slot, "A");
+    assert_eq!(loaded.boot_state, "rollback-required");
+
+    let _ = fs::remove_dir_all(&dir);
+    match old {
+        Some(value) => std::env::set_var("E4_BOOT_STATE_FILE", value),
+        None => std::env::remove_var("E4_BOOT_STATE_FILE"),
+    }
+}
+
 async fn index(State(state): State<AppState>) -> Result<Html<String>, StatusCode> {
     let boot_state = state.boot_state.read().await;
     IndexTemplate {
@@ -162,12 +237,20 @@ async fn update_result(
 ) -> Result<impl IntoResponse, StatusCode> {
     let mut boot_state = state.boot_state.write().await;
     boot_state.record_update_result(&payload.result);
+    if let Err(err) = boot_state.persist() {
+        tracing::warn!(error = %err, "failed to persist update result");
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
     Ok((StatusCode::OK, Json(boot_state.clone())))
 }
 
 async fn rollback(State(state): State<AppState>) -> Result<impl IntoResponse, StatusCode> {
     let mut boot_state = state.boot_state.write().await;
     boot_state.rollback();
+    if let Err(err) = boot_state.persist() {
+        tracing::warn!(error = %err, "failed to persist rollback state");
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
     Ok((StatusCode::OK, Json(boot_state.clone())))
 }
 
