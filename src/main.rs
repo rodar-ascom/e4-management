@@ -12,7 +12,7 @@ use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 use tracing::info;
 
-const DEFAULT_BOOT_STATE_PATH: &str = "/run/e4/boot-state.conf";
+const DEFAULT_BOOT_STATE_PATH: &str = "/data/e4/boot-state.conf";
 
 #[derive(Clone)]
 struct AppState {
@@ -34,6 +34,11 @@ struct BootState {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct UpdateRequest {
     result: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct BootStatePathRequest {
+    path: String,
 }
 
 #[derive(Template)]
@@ -178,6 +183,19 @@ fn failed_update_marks_rollback_required() {
 }
 
 #[test]
+fn default_state_file_uses_persistent_data_path() {
+    let old = std::env::var("E4_BOOT_STATE_FILE").ok();
+    std::env::remove_var("E4_BOOT_STATE_FILE");
+
+    assert_eq!(BootState::state_path(), "/data/e4/boot-state.conf");
+
+    match old {
+        Some(value) => std::env::set_var("E4_BOOT_STATE_FILE", value),
+        None => std::env::remove_var("E4_BOOT_STATE_FILE"),
+    }
+}
+
+#[test]
 fn persistent_state_round_trip_works() {
     let dir = std::env::temp_dir().join(format!("e4-state-test-{}", std::process::id()));
     let path = dir.join("boot-state.conf");
@@ -254,6 +272,28 @@ async fn rollback(State(state): State<AppState>) -> Result<impl IntoResponse, St
     Ok((StatusCode::OK, Json(boot_state.clone())))
 }
 
+async fn set_state_path(
+    State(state): State<AppState>,
+    Json(payload): Json<BootStatePathRequest>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let path = payload.path.trim();
+    if path.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let mut boot_state = state.boot_state.write().await;
+    std::env::set_var("E4_BOOT_STATE_FILE", path);
+    let persisted = BootState::from_persistent_file().unwrap_or_else(|| boot_state.clone());
+    *boot_state = persisted;
+
+    if let Err(err) = boot_state.persist() {
+        tracing::warn!(error = %err, "failed to persist state after updating config path");
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    Ok((StatusCode::OK, Json(boot_state.clone())))
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
@@ -274,6 +314,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/update/status", get(update_status))
         .route("/api/update/result", post(update_result))
         .route("/api/actions/rollback", post(rollback))
+        .route("/api/config/state-file", post(set_state_path))
         .with_state(state);
 
     let listener = TcpListener::bind(address).await?;
