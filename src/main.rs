@@ -8,13 +8,11 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::{env, fs, net::SocketAddr, path::PathBuf};
-use std::os::unix::fs::PermissionsExt;
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 use tracing::info;
 
 const DEFAULT_BOOT_STATE_PATH: &str = "/var/lib/e4/boot-state.conf";
-const FALLBACK_BOOT_STATE_PATH: &str = "/tmp/e4/boot-state.conf";
 static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[derive(Clone)]
@@ -39,11 +37,6 @@ struct UpdateRequest {
     result: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct BootStatePathRequest {
-    path: String,
-}
-
 #[derive(Template)]
 #[template(path = "index.html")]
 struct IndexTemplate<'a> {
@@ -64,7 +57,7 @@ impl Default for BootState {
             health_ok: true,
             last_update_result: "none".to_string(),
             last_boot_time: "unknown".to_string(),
-            persistent_data_path: "/data".to_string(),
+            persistent_data_path: "/var/lib/e4".to_string(),
         }
     }
 }
@@ -72,10 +65,6 @@ impl Default for BootState {
 impl BootState {
     fn state_path() -> String {
         env::var("E4_BOOT_STATE_FILE").unwrap_or_else(|_| DEFAULT_BOOT_STATE_PATH.to_string())
-    }
-
-    fn fallback_state_path() -> String {
-        FALLBACK_BOOT_STATE_PATH.to_string()
     }
 
     fn persist_to(path: &str, state: &Self) -> Result<(), std::io::Error> {
@@ -124,39 +113,7 @@ impl BootState {
 
     fn persist(&self) -> Result<(), std::io::Error> {
         let preferred = Self::state_path();
-        match Self::persist_to(&preferred, self) {
-            Ok(()) => Ok(()),
-            Err(err) => {
-                let fallback = Self::fallback_state_path();
-                if preferred == fallback {
-                    tracing::warn!(
-                        path = %preferred,
-                        error = %err,
-                        "state file write failed; keeping in-memory state only"
-                    );
-                    return Ok(());
-                }
-
-                tracing::warn!(
-                    preferred_path = %preferred,
-                    fallback_path = %fallback,
-                    error = %err,
-                    "state file write failed; falling back to temporary path"
-                );
-                env::set_var("E4_BOOT_STATE_FILE", &fallback);
-                match Self::persist_to(&fallback, self) {
-                    Ok(()) => Ok(()),
-                    Err(fallback_err) => {
-                        tracing::warn!(
-                            path = %fallback,
-                            error = %fallback_err,
-                            "fallback state file write failed; keeping in-memory state only"
-                        );
-                        Ok(())
-                    }
-                }
-            }
-        }
+        Self::persist_to(&preferred, self)
     }
 
     fn from_environment() -> Self {
@@ -249,31 +206,18 @@ fn default_state_file_uses_persistent_data_path() {
 }
 
 #[test]
-fn persist_falls_back_when_target_directory_is_unwritable() {
+fn persist_returns_error_when_target_directory_is_a_file() {
     with_env_var(None, || {
-        let dir = std::env::temp_dir().join(format!("e4-unwritable-{}", std::process::id()));
-        let unwritable = dir.join("blocked");
+        let path = std::env::temp_dir().join(format!("e4-state-parent-file-{}", std::process::id()));
 
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&unwritable).unwrap();
-
-        let metadata = fs::metadata(&unwritable).unwrap();
-        let mut perms = metadata.permissions();
-        perms.set_mode(0o555);
-        fs::set_permissions(&unwritable, perms).unwrap();
-
-        let target = unwritable.join("boot-state.conf");
-        std::env::set_var("E4_BOOT_STATE_FILE", &target);
+        let _ = fs::remove_file(&path);
+        fs::write(&path, "not a directory").unwrap();
+        std::env::set_var("E4_BOOT_STATE_FILE", path.join("boot-state.conf"));
 
         let state = BootState::default();
-        assert!(state.persist().is_ok());
-        assert_eq!(std::env::var("E4_BOOT_STATE_FILE").unwrap(), "/tmp/e4/boot-state.conf");
+        assert!(state.persist().is_err());
 
-        let restore = fs::metadata(&unwritable).unwrap();
-        let mut restore_perms = restore.permissions();
-        restore_perms.set_mode(0o755);
-        fs::set_permissions(&unwritable, restore_perms).unwrap();
-        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_file(&path);
     });
 }
 
@@ -332,41 +276,26 @@ async fn update_result(
     State(state): State<AppState>,
     Json(payload): Json<UpdateRequest>,
 ) -> Result<impl IntoResponse, StatusCode> {
+    if !matches!(payload.result.as_str(), "success" | "failed") {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
     let mut boot_state = state.boot_state.write().await;
     boot_state.record_update_result(&payload.result);
-    if let Err(err) = boot_state.persist() {
-        tracing::warn!(error = %err, "failed to persist update result; returning in-memory state");
-    }
+    boot_state.persist().map_err(|err| {
+        tracing::warn!(error = %err, "failed to persist update result");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     Ok((StatusCode::OK, Json(boot_state.clone())))
 }
 
 async fn rollback(State(state): State<AppState>) -> Result<impl IntoResponse, StatusCode> {
     let mut boot_state = state.boot_state.write().await;
     boot_state.rollback();
-    if let Err(err) = boot_state.persist() {
-        tracing::warn!(error = %err, "failed to persist rollback state; returning in-memory state");
-    }
-    Ok((StatusCode::OK, Json(boot_state.clone())))
-}
-
-async fn set_state_path(
-    State(state): State<AppState>,
-    Json(payload): Json<BootStatePathRequest>,
-) -> Result<impl IntoResponse, StatusCode> {
-    let path = payload.path.trim();
-    if path.is_empty() {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-
-    let mut boot_state = state.boot_state.write().await;
-    std::env::set_var("E4_BOOT_STATE_FILE", path);
-    let persisted = BootState::from_persistent_file().unwrap_or_else(|| boot_state.clone());
-    *boot_state = persisted;
-
-    if let Err(err) = boot_state.persist() {
-        tracing::warn!(error = %err, "failed to persist state after updating config path; keeping in-memory state");
-    }
-
+    boot_state.persist().map_err(|err| {
+        tracing::warn!(error = %err, "failed to persist rollback state");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     Ok((StatusCode::OK, Json(boot_state.clone())))
 }
 
@@ -390,7 +319,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/update/status", get(update_status))
         .route("/api/update/result", post(update_result))
         .route("/api/actions/rollback", post(rollback))
-        .route("/api/config/state-file", post(set_state_path))
         .with_state(state);
 
     let listener = TcpListener::bind(address).await?;
